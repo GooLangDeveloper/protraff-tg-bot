@@ -1,15 +1,20 @@
-FROM golang:1.21-alpine
+FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
 
-# Сначала копируем go.mod и исходник
 COPY go.mod ./
+RUN go mod download
+
 COPY main.go ./
 
-# Генерируем go.sum и скачиваем зависимости
-RUN go mod tidy
+RUN go build -o bot main.go
 
-# Собираем бинарник
-RUN go build -ldflags="-s -w" -o bot
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+COPY --from=builder /app/bot .
 
 CMD ["./bot"]
