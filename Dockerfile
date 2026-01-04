@@ -6,14 +6,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY main.go ./
-RUN go build -o bot main.go
+RUN go build -ldflags="-s -w" -o bot
 
 FROM alpine:latest
-
 RUN apk --no-cache add ca-certificates
-
 WORKDIR /root/
-
 COPY --from=builder /app/bot .
-
 CMD ["./bot"]
