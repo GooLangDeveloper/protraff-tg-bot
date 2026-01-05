@@ -21,16 +21,16 @@ var (
 )
 
 func main() {
-	botToken = os.Getenv("BOT_TOKEN")
+	botToken = os.Getenv("8549089105:AAGFrBrus-N4a4cLU1QeRRnvyUjhV3Up21U")
 	if botToken == "" {
 		log.Fatal("BOT_TOKEN не установлен")
 	}
 
 	adminID := os.Getenv("ADMIN_CHAT_ID")
-	if adminID == "" {
+	if adminID == "433873179" {
 		log.Fatal("ADMIN_CHAT_ID не установлен")
 	}
-	if _, err := os.Sscanf(adminID, "%d", &adminChatID); err != nil {
+	if _, err := fmt.Sscanf(adminID, "%d", &adminChatID); err != nil {
 		log.Fatalf("Некорректный ADMIN_CHAT_ID: %v", err)
 	}
 
