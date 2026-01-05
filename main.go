@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -21,118 +22,134 @@ var (
 )
 
 func main() {
-	botToken = os.Getenv("8549089105:AAGFrBrus-N4a4cLU1QeRRnvyUjhV3Up21U")
+	// === ENV ===
+	botToken = os.Getenv("BOT_TOKEN")
 	if botToken == "" {
 		log.Fatal("BOT_TOKEN не установлен")
 	}
 
 	adminID := os.Getenv("ADMIN_CHAT_ID")
-	if adminID == "433873179" {
+	if adminID == "" {
 		log.Fatal("ADMIN_CHAT_ID не установлен")
 	}
+
 	if _, err := fmt.Sscanf(adminID, "%d", &adminChatID); err != nil {
 		log.Fatalf("Некорректный ADMIN_CHAT_ID: %v", err)
 	}
 
+	// === BOT INIT ===
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	log.Printf("Бот запущен: @%s", bot.Self.UserName)
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+	updates := bot.GetUpdatesChan(u)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	go reminderWorker(ctx, bot)
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-
-	updates := bot.GetUpdatesChan(u)
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	log.Println("Bot started")
 
 	for {
 		select {
-		case <-stop:
-			log.Println("Получен сигнал остановки, завершаю работу...")
-			cancel()
-			bot.StopReceivingUpdates()
+		case <-ctx.Done():
+			log.Println("Bot shutting down")
 			return
+
 		case update := <-updates:
 			if update.Message != nil {
 				handleMessage(bot, update.Message)
-			} else if update.CallbackQuery != nil {
+			}
+
+			if update.CallbackQuery != nil {
 				handleCallback(bot, update.CallbackQuery)
 			}
 		}
 	}
 }
 
-func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
-	chatID := message.Chat.ID
+// ================= HANDLERS =================
 
-	if message.Contact != nil {
-		handleContact(bot, message)
+func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	chatID := msg.Chat.ID
+
+	// Контакт
+	if msg.Contact != nil {
+		mu.Lock()
+		delete(pendingReminders, chatID)
+		mu.Unlock()
+
+		forward := tgbotapi.NewForward(adminChatID, chatID, msg.MessageID)
+		bot.Send(forward)
+
+		confirm := tgbotapi.NewMessage(chatID, "Спасибо. Менеджер свяжется с вами в Telegram.")
+		confirm.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+		bot.Send(confirm)
 		return
 	}
 
-	switch message.Command() {
+	switch msg.Text {
+	case "/start":
+		sendStart(bot, chatID)
+	case "/about":
+		sendAbout(bot, chatID)
+	case "/faq":
+		sendFAQMenu(bot, chatID)
+	case "/contact":
+		requestContact(bot, chatID)
+	}
+}
+
+func handleCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
+	if cb.Message == nil {
+		return
+	}
+
+	chatID := cb.Message.Chat.ID
+
+	switch cb.Data {
 	case "start":
 		sendStart(bot, chatID)
+
 	case "about":
 		sendAbout(bot, chatID)
+
 	case "faq":
 		sendFAQMenu(bot, chatID)
+
 	case "contact":
 		requestContact(bot, chatID)
-	case "help":
-		sendHelp(bot, chatID)
-	default:
-		if message.Command() != "" {
-			sendStart(bot, chatID)
-		}
-	}
-}
 
-func handleCallback(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery) {
-	if callback.Message == nil {
-		log.Println("Получен callback без Message, пропускаю")
-		return
-	}
-
-	chatID := callback.Message.Chat.ID
-	data := callback.Data
-
-	if _, err := bot.Send(tgbotapi.NewCallback(callback.ID, "")); err != nil {
-		log.Printf("Ошибка отправки callback ответа: %v", err)
-	}
-
-	switch data {
-	case "request_contact":
-		requestContact(bot, chatID)
-	case "contact_manager":
-		requestContact(bot, chatID)
-	case "faq":
-		sendFAQMenu(bot, chatID)
-	case "about":
-		sendAbout(bot, chatID)
 	case "faq_1":
-		sendFAQ1(bot, chatID)
+		sendText(bot, chatID, faq1())
+
 	case "faq_2":
-		sendFAQ2(bot, chatID)
+		sendText(bot, chatID, faq2())
+
 	case "faq_3":
-		sendFAQ3(bot, chatID)
+		sendText(bot, chatID, faq3())
+
 	case "faq_4":
-		sendFAQ4(bot, chatID)
+		sendText(bot, chatID, faq4())
+
 	case "faq_5":
-		sendFAQ5(bot, chatID)
-	case "back_to_start":
+		sendText(bot, chatID, faq5())
+
+	case "back":
 		sendStart(bot, chatID)
+
+	case "leave_contact":
+		requestContact(bot, chatID)
 	}
+
+	bot.Request(tgbotapi.NewCallback(cb.ID, ""))
 }
+
+// ================= UI =================
 
 func sendStart(bot *tgbotapi.BotAPI, chatID int64) {
 	text := `👋🏻 Добро пожаловать в Pro-traffic.
@@ -145,26 +162,9 @@ func sendStart(bot *tgbotapi.BotAPI, chatID int64) {
 
 Без звонков и навязывания.`
 
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🚀 Оставить заявку", "request_contact"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📞 Связаться с менеджером", "contact_manager"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("❓ FAQ", "faq"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("ℹ️ О компании", "about"),
-		),
-	)
-
 	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки /start: %v", err)
-	}
+	msg.ReplyMarkup = mainMenu()
+	bot.Send(msg)
 }
 
 func sendAbout(bot *tgbotapi.BotAPI, chatID int64) {
@@ -173,258 +173,142 @@ func sendAbout(bot *tgbotapi.BotAPI, chatID int64) {
 Наша миссия — сделать маркетинг доступным
 и экономически оправданным для малого и среднего бизнеса.
 
-Мы сознательно убрали всё,
-что в классических агентствах раздувает стоимость услуг:
-посредников, project- и community-менеджеров,
-отделы продаж и лишние уровни согласований.
-
-Почему?
-Потому что бизнес платит не за результат,
-а за содержание большой внутренней структуры агентства.
-
-В итоге:
-— цена растёт
-— специалистов в чатах становится больше
-— а реальная работа всё равно делается несколькими людьми
-
-Мы выбрали другой путь.
+Мы убрали всё, что раздувает стоимость услуг:
+посредников, лишние роли и уровни согласований.
 
 В проекте участвуют только те,
 кто напрямую влияет на результат:
 вы, ваш бизнес, ИИ и специалисты,
-которые реально работают над продвижением.
+которые реально работают над продвижением.`
 
-Наша цель — доказать эффективность этой модели,
-собрать своих клиентов
-и выстроить долгосрочное сотрудничество,
-а не масштабировать штат ради масштаба.`
-
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "back_to_start"),
-		),
-	)
-
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки About: %v", err)
-	}
+	sendText(bot, chatID, text)
 }
 
 func sendFAQMenu(bot *tgbotapi.BotAPI, chatID int64) {
-	text := "Выберите вопрос:"
-
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("1. Как устроена работа", "faq_1"),
+			tgbotapi.NewInlineKeyboardButtonData("Как устроена работа", "faq_1"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("2. Почему нет менеджеров", "faq_2"),
+			tgbotapi.NewInlineKeyboardButtonData("Почему нет менеджеров", "faq_2"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("3. Почему ИИ, а не дизайнер", "faq_3"),
+			tgbotapi.NewInlineKeyboardButtonData("Почему ИИ, а не дизайнер", "faq_3"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("4. Подойдёт ли формат", "faq_4"),
+			tgbotapi.NewInlineKeyboardButtonData("Подойдёт ли формат", "faq_4"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("5. Что после заявки", "faq_5"),
+			tgbotapi.NewInlineKeyboardButtonData("Что после заявки", "faq_5"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "back_to_start"),
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "back"),
 		),
 	)
 
-	msg := tgbotapi.NewMessage(chatID, text)
+	msg := tgbotapi.NewMessage(chatID, "Частые вопросы:")
 	msg.ReplyMarkup = keyboard
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки FAQ меню: %v", err)
-	}
+	bot.Send(msg)
 }
 
-func sendFAQ1(bot *tgbotapi.BotAPI, chatID int64) {
-	text := `Мы работаем по компактной и эффективной модели.
+func requestContact(bot *tgbotapi.BotAPI, chatID int64) {
+	mu.Lock()
+	pendingReminders[chatID] = time.Now()
+	mu.Unlock()
+
+	msg := tgbotapi.NewMessage(chatID, "Нажмите кнопку ниже, чтобы отправить контакт.")
+	keyboard := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButtonContact("📞 Отправить контакт"),
+		),
+	)
+	keyboard.ResizeKeyboard = true
+	keyboard.OneTimeKeyboard = true
+	msg.ReplyMarkup = keyboard
+	bot.Send(msg)
+}
+
+func sendText(bot *tgbotapi.BotAPI, chatID int64, text string) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = backMenu()
+	bot.Send(msg)
+}
+
+// ================= MENUS =================
+
+func mainMenu() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🚀 Оставить заявку", "leave_contact"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("❓ FAQ", "faq"),
+			tgbotapi.NewInlineKeyboardButtonData("ℹ️ О компании", "about"),
+		),
+	)
+}
+
+func backMenu() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "back"),
+		),
+	)
+}
+
+// ================= FAQ TEXTS =================
+
+func faq1() string {
+	return `Мы работаем по компактной и эффективной модели.
 
 В проекте участвуют:
 — ИИ для анализа ниши, конкурентов и офферов
 — таргетолог как технический специалист
 — маркетолог, отвечающий за стратегию и воронку
-— ИИ-инструменты для создания креативов и тестирования гипотез
+— ИИ-инструменты для создания и тестирования креативов
 
 Без лишних ролей и посредников.`
-
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к FAQ", "faq"),
-		),
-	)
-
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки FAQ 1: %v", err)
-	}
 }
 
-func sendFAQ2(bot *tgbotapi.BotAPI, chatID int64) {
-	text := `Такие роли оправданы при масштабировании крупных команд.
+func faq2() string {
+	return `Такие роли оправданы при масштабировании крупных команд.
 
 Для малого и среднего бизнеса
 они часто увеличивают стоимость,
 не влияя напрямую на результат.
 
-Возникает логичный вопрос: зачем?
-
-Можно подключить ещё десяток людей.
-Но ради какой цели?
-
-На практике штат часто раздувается,
-чтобы основатель агентства полностью делегировал работу команде.
-Стоимость этого делегирования ложится на бизнес.
-
-Мы выстроили процесс иначе —
+Мы выстроили процесс
 с прямой и понятной коммуникацией
-между бизнесом и специалистами,
-которые реально работают над проектом.`
-
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к FAQ", "faq"),
-		),
-	)
-
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки FAQ 2: %v", err)
-	}
+между бизнесом и специалистами.`
 }
 
-func sendFAQ3(bot *tgbotapi.BotAPI, chatID int64) {
-	text := `ИИ — это рациональный инструмент.
+func faq3() string {
+	return `ИИ — это рациональный инструмент.
 
-Хороший дизайнер — это специалист
-с высокой стоимостью на рынке.
-Спрос на дизайнеров, видеографов и мобилографов
-растёт во всех нишах.
-
-Вопрос простой:
-переплачивать 100–150$ за то,
-что креатив сделал человек,
-или направить эти деньги в рекламный бюджет?
-
-ИИ позволяет быстрее создавать креативы,
+Он позволяет быстрее создавать креативы,
 тестировать больше гипотез
-и не закладывать стоимость штата в цену услуги.`
-
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к FAQ", "faq"),
-		),
-	)
-
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки FAQ 3: %v", err)
-	}
+и направлять бюджет в рекламу,
+а не в содержание штата.`
 }
 
-func sendFAQ4(bot *tgbotapi.BotAPI, chatID int64) {
-	text := `Формат подойдёт,
+func faq4() string {
+	return `Формат подойдёт,
 если у вас малый или средний бизнес
 и нужен понятный запуск рекламы
 без перегруженных процессов.`
-
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к FAQ", "faq"),
-		),
-	)
-
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки FAQ 4: %v", err)
-	}
 }
 
-func sendFAQ5(bot *tgbotapi.BotAPI, chatID int64) {
-	text := `После того как вы оставите контакт,
+func faq5() string {
+	return `После того как вы оставите контакт,
 менеджер свяжется с вами в Telegram.
 
-Мы:
-— уточним задачу
-— зададим несколько вопросов
-— предложим дальнейшие шаги
+Мы уточним задачу
+и предложим дальнейшие шаги.
 
 Без звонков и навязывания.`
-
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к FAQ", "faq"),
-		),
-	)
-
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки FAQ 5: %v", err)
-	}
 }
 
-func requestContact(bot *tgbotapi.BotAPI, chatID int64) {
-	text := "Нажмите кнопку ниже, чтобы поделиться контактом:"
-
-	keyboard := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButtonContact("📱 Поделиться контактом"),
-		),
-	)
-	keyboard.OneTimeKeyboard = true
-
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки запроса контакта: %v", err)
-		return
-	}
-
-	mu.Lock()
-	if _, exists := pendingReminders[chatID]; !exists {
-		pendingReminders[chatID] = time.Now()
-	}
-	mu.Unlock()
-}
-
-func handleContact(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
-	chatID := message.Chat.ID
-
-	mu.Lock()
-	delete(pendingReminders, chatID)
-	mu.Unlock()
-
-	forward := tgbotapi.NewForward(adminChatID, chatID, message.MessageID)
-	if _, err := bot.Send(forward); err != nil {
-		log.Printf("Ошибка пересылки контакта админу: %v", err)
-	}
-
-	confirmText := "✅ Спасибо! Ваша заявка отправлена. Менеджер свяжется с вами в ближайшее время."
-	msg := tgbotapi.NewMessage(chatID, confirmText)
-	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки подтверждения: %v", err)
-	}
-}
-
-func sendHelp(bot *tgbotapi.BotAPI, chatID int64) {
-	text := "Используйте /start для начала работы с ботом."
-	msg := tgbotapi.NewMessage(chatID, text)
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки help: %v", err)
-	}
-}
+// ================= REMINDER =================
 
 func reminderWorker(ctx context.Context, bot *tgbotapi.BotAPI) {
 	ticker := time.NewTicker(10 * time.Minute)
@@ -433,24 +317,15 @@ func reminderWorker(ctx context.Context, bot *tgbotapi.BotAPI) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Остановка reminderWorker")
 			return
-		case <-ticker.C:
-			mu.Lock()
-			now := time.Now()
-			for chatID, timestamp := range pendingReminders {
-				if now.Sub(timestamp) >= 24*time.Hour {
-					sendReminder(bot, chatID)
-					delete(pendingReminders, chatID)
-				}
-			}
-			mu.Unlock()
-		}
-	}
-}
 
-func sendReminder(bot *tgbotapi.BotAPI, chatID int64) {
-	text := `Напоминаем, что вы можете задать вопрос по рекламе.
+		case <-ticker.C:
+			now := time.Now()
+
+			mu.Lock()
+			for chatID, ts := range pendingReminders {
+				if now.Sub(ts) >= 24*time.Hour {
+					text := `Напоминаем, что вы можете задать вопрос по рекламе.
 
 Если решите оставить заявку —
 для вас действует разовая скидка 10%.
@@ -458,15 +333,18 @@ func sendReminder(bot *tgbotapi.BotAPI, chatID int64) {
 Промокод: protraff-2026
 Просто укажите его менеджеру при общении.`
 
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🚀 Оставить заявку", "request_contact"),
-		),
-	)
+					msg := tgbotapi.NewMessage(chatID, text)
+					msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+						tgbotapi.NewInlineKeyboardRow(
+							tgbotapi.NewInlineKeyboardButtonData("🚀 Оставить заявку", "leave_contact"),
+						),
+					)
 
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Ошибка отправки напоминания chatID=%d: %v", chatID, err)
+					bot.Send(msg)
+					delete(pendingReminders, chatID)
+				}
+			}
+			mu.Unlock()
+		}
 	}
 }
