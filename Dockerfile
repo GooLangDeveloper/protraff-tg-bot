@@ -5,7 +5,7 @@ WORKDIR /app
 COPY go.mod ./
 COPY main.go ./
 
-RUN go mod download
+RUN go mod download && go mod verify
 RUN go build -o bot main.go
 
 FROM alpine:latest
