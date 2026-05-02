@@ -237,6 +237,9 @@ func sendText(bot *tgbotapi.BotAPI, chatID int64, text string) {
 // ================= MENUS =================
 
 func mainMenu() tgbotapi.InlineKeyboardMarkup {
+	helloMsg := "Здравствуйте! Меня интересуют ваши услуги по продвижению. Расскажите, пожалуйста, подробнее."
+	link := "https://t.me/717840576?text=" + helloMsg
+	
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🚀 Оставить заявку", "leave_contact"),
@@ -244,6 +247,10 @@ func mainMenu() tgbotapi.InlineKeyboardMarkup {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("❓ FAQ", "faq"),
 			tgbotapi.NewInlineKeyboardButtonData("ℹ️ О компании", "about"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			// Новая кнопка прямой связи
+			tgbotapi.NewInlineKeyboardButtonURL("💬 Написать менеджеру напрямую", link),
 		),
 	)
 }
