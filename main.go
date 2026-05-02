@@ -13,8 +13,6 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const managerTgID = 717840576
-
 var (
 	botToken    string
 	adminChatID int64
@@ -246,9 +244,6 @@ func mainMenu() tgbotapi.InlineKeyboardMarkup {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("❓ FAQ", "faq"),
 			tgbotapi.NewInlineKeyboardButtonData("ℹ️ О компании", "about"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonURL("💬 Написать менеджеру", "tg://user?id=717840576"),
 		),
 	)
 }
