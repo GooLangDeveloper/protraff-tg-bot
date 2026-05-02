@@ -238,7 +238,7 @@ func sendText(bot *tgbotapi.BotAPI, chatID int64, text string) {
 
 func mainMenu() tgbotapi.InlineKeyboardMarkup {
 	helloMsg := "Здравствуйте! Меня интересуют ваши услуги по продвижению. Расскажите, пожалуйста, подробнее."
-	link := "https://t.me/717840576?text=" + helloMsg
+	link := "https://t.me/Kmrtva?text=" + helloMsg
 	
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
